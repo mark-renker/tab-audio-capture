@@ -24,6 +24,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'stop-capture') {
     stopCapture();
   }
+
+  if (message.type === 'revoke-blob' && message.blobUrl) {
+    try {
+      URL.revokeObjectURL(message.blobUrl);
+      console.log('[offscreen] Blob URL revoked');
+    } catch (e) {
+      console.warn('[offscreen] Failed to revoke blob URL:', e);
+    }
+  }
 });
 
 // ── Start capturing ─────────────────────────────────────────────────────
@@ -100,6 +109,9 @@ async function startCapture(streamId) {
     isCapturing = true;
     console.log('[offscreen] Capture started (AudioWorklet) — sr:', sampleRate, 'ch:', channelCount);
 
+    // Confirm to background that capture actually started
+    chrome.runtime.sendMessage({ type: 'offscreen-started' });
+
   } catch (err) {
     console.error('[offscreen] Capture start error:', err);
     chrome.runtime.sendMessage({
@@ -112,7 +124,16 @@ async function startCapture(streamId) {
 // ── Stop capturing and encode WAV ───────────────────────────────────────
 
 function stopCapture() {
-  if (!isCapturing) return;
+  // Always send confirmation that we received the stop command
+  // This is critical - background.js waits for this before updating state
+
+  if (!isCapturing) {
+    console.warn('[offscreen] stopCapture called but not capturing');
+    // Still send stopped confirmation so background can update state
+    chrome.runtime.sendMessage({ type: 'offscreen-stopped' });
+    return;
+  }
+
   isCapturing = false;
 
   // Tell the worklet processor to stop
@@ -132,6 +153,17 @@ function stopCapture() {
   } catch (e) {
     console.warn('[offscreen] Cleanup warning:', e);
   }
+
+  // Reset node references
+  workletNode = null;
+  silentGain = null;
+  sourceNode = null;
+  audioContext = null;
+  mediaStream = null;
+
+  // Send confirmation that capture has stopped BEFORE encoding
+  // This lets the UI update immediately while we encode
+  chrome.runtime.sendMessage({ type: 'offscreen-stopped' });
 
   // Merge all PCM chunks into one contiguous Float32Array
   const totalLength = pcmChunks.reduce((sum, c) => sum + c.length, 0);

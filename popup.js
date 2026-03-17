@@ -133,19 +133,26 @@ btn.addEventListener('click', async () => {
 
   } else {
     // === STOP RECORDING ===
+    statusText.textContent = 'Stopping\u2026';
+
     chrome.runtime.sendMessage({ type: 'stop-recording' }, (resp) => {
       btn.disabled = false;
       if (chrome.runtime.lastError) {
         statusText.textContent = 'Error: ' + chrome.runtime.lastError.message;
+        // Don't reset UI - recording may still be active
         return;
       }
-      setUI(false);
       if (resp && resp.success) {
+        // Only now is recording actually stopped - update UI
+        setUI(false);
         statusText.textContent = 'Encoding WAV\u2026';
         setTimeout(() => {
-          statusText.textContent = 'Ready to record';
-        }, 5000);
+          if (statusText.textContent === 'Encoding WAV\u2026') {
+            statusText.textContent = 'Ready to record';
+          }
+        }, 10000);
       } else {
+        // Stop failed - recording may still be active, don't change UI state
         statusText.textContent = resp?.error || 'Failed to stop recording';
       }
     });
@@ -156,9 +163,23 @@ btn.addEventListener('click', async () => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'recording-status') {
-    setUI(message.recording);
-    if (message.recording) {
-      startTimer();
+    // Only start a new timer if we weren't already tracking one
+    // and if background provides the start time
+    if (message.recording && !isRecording) {
+      setUI(true);
+      // Request updated start time from background
+      chrome.runtime.sendMessage({ type: 'get-status' }, (resp) => {
+        if (resp && resp.recording && resp.startTime) {
+          startTime = resp.startTime;
+          if (!timerInterval) {
+            timerInterval = setInterval(() => {
+              timerEl.textContent = formatTime(Date.now() - startTime);
+            }, 250);
+          }
+        }
+      });
+    } else if (!message.recording && isRecording) {
+      setUI(false);
     }
   }
   if (message.type === 'download-complete') {

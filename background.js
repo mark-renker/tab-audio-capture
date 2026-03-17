@@ -50,6 +50,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleStopRecording(sendResponse);
       return true;
 
+    // ---- Offscreen confirms capture started ----
+    case 'offscreen-started':
+      // Capture actually started - state is already set, just log
+      console.log('[background] Offscreen confirmed capture started');
+      return false;
+
+    // ---- Offscreen confirms it stopped and is encoding ----
+    case 'offscreen-stopped':
+      console.log('[background] Offscreen confirmed stop');
+      // Clear timeout since offscreen responded
+      if (stopTimeoutId) {
+        clearTimeout(stopTimeoutId);
+        stopTimeoutId = null;
+      }
+      // Now we can safely update state
+      recording = false;
+      recordingTabId = null;
+      // Respond to the pending stop request
+      if (pendingStopResponse) {
+        pendingStopResponse({ success: true });
+        pendingStopResponse = null;
+      }
+      broadcastStatus();
+      return false;
+
     // ---- Offscreen sends back a blob URL when recording finishes ----
     case 'offscreen-wav-ready':
       handleWavReady(message.blobUrl, message.filename);
@@ -58,6 +83,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // ---- Offscreen reports an error ----
     case 'offscreen-error':
       console.error('[background] Offscreen error:', message.error);
+      // Clear any pending stop
+      if (stopTimeoutId) {
+        clearTimeout(stopTimeoutId);
+        stopTimeoutId = null;
+      }
+      if (pendingStopResponse) {
+        pendingStopResponse({ success: false, error: message.error });
+        pendingStopResponse = null;
+      }
       recording = false;
       recordingTabId = null;
       broadcastStatus();
@@ -108,6 +142,10 @@ async function handleStartRecording(streamId, tabId, sendResponse) {
 
 // ── Stop recording ──────────────────────────────────────────────────────
 
+// Pending stop request - we wait for offscreen to confirm before responding
+let pendingStopResponse = null;
+let stopTimeoutId = null;
+
 async function handleStopRecording(sendResponse) {
   try {
     if (!recording) {
@@ -115,26 +153,59 @@ async function handleStopRecording(sendResponse) {
       return;
     }
 
+    // Store the response callback - we'll call it when offscreen confirms
+    pendingStopResponse = sendResponse;
+
+    // Set a timeout in case offscreen doesn't respond
+    stopTimeoutId = setTimeout(() => {
+      console.warn('[background] Stop capture timeout - forcing state reset');
+      if (pendingStopResponse) {
+        pendingStopResponse({ success: false, error: 'Stop timed out' });
+        pendingStopResponse = null;
+      }
+      recording = false;
+      recordingTabId = null;
+      broadcastStatus();
+      closeOffscreen().catch(() => {});
+    }, 10000); // 10 second timeout
+
     // Tell offscreen to stop and encode WAV
     chrome.runtime.sendMessage({
       type: 'stop-capture',
       target: 'offscreen',
     });
 
-    recording = false;
-    recordingTabId = null;
-
-    sendResponse({ success: true });
-    broadcastStatus();
   } catch (err) {
     console.error('[background] Stop recording error:', err);
-    sendResponse({ success: false, error: err.message });
+    if (pendingStopResponse) {
+      pendingStopResponse({ success: false, error: err.message });
+      pendingStopResponse = null;
+    }
+    if (stopTimeoutId) {
+      clearTimeout(stopTimeoutId);
+      stopTimeoutId = null;
+    }
   }
 }
 
 // ── Handle completed WAV from offscreen ─────────────────────────────────
 
 async function handleWavReady(blobUrl, filename) {
+  let cleanedUp = false;
+
+  function cleanup() {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    // Tell offscreen to revoke the blob URL to free memory
+    chrome.runtime.sendMessage({
+      type: 'revoke-blob',
+      target: 'offscreen',
+      blobUrl,
+    }).catch(() => {});
+    // Close the offscreen document to free resources
+    closeOffscreen().catch(() => {});
+  }
+
   try {
     // Use chrome.downloads to let the user pick a save location
     const downloadId = await chrome.downloads.download({
@@ -144,19 +215,28 @@ async function handleWavReady(blobUrl, filename) {
     });
 
     // Monitor download status for cleanup
-    chrome.downloads.onChanged.addListener(function listener(delta) {
+    const listener = (delta) => {
       if (delta.id === downloadId && delta.state) {
         if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
           chrome.downloads.onChanged.removeListener(listener);
           // Notify popup
           chrome.runtime.sendMessage({ type: 'download-complete' }).catch(() => {});
-          // Close the offscreen document to free resources
-          closeOffscreen().catch(() => {});
+          cleanup();
         }
       }
-    });
+    };
+    chrome.downloads.onChanged.addListener(listener);
+
+    // Fallback cleanup after 2 minutes in case dialog is cancelled
+    // (cancelled dialogs don't always trigger state changes)
+    setTimeout(() => {
+      chrome.downloads.onChanged.removeListener(listener);
+      cleanup();
+    }, 120000);
+
   } catch (err) {
     console.error('[background] Download error:', err);
+    cleanup();
   }
 }
 
