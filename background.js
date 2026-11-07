@@ -1,12 +1,24 @@
 // background.js — Service worker that coordinates tab capture, offscreen
 // document lifecycle, and downloads.
-//
-// The popup obtains the streamId (user gesture context) and sends it here.
-// This worker manages the offscreen document and handles the download.
 
 let recording = false;
 let recordingStartTime = 0;
 let recordingTabId = null;
+let recordingTabTitle = '';
+let recordingChannels = 2;
+let pendingBlobUrl = null;
+
+// ── Badge helpers ──────────────────────────────────────────────────────
+
+function updateBadge() {
+  if (recording) {
+    chrome.action.setBadgeText({ text: 'REC' });
+    chrome.action.setBadgeBackgroundColor({ color: '#e94560' });
+    chrome.action.setBadgeTextColor({ color: '#ffffff' });
+  } else {
+    chrome.action.setBadgeText({ text: '' });
+  }
+}
 
 // ── Offscreen document management ───────────────────────────────────────
 
@@ -35,55 +47,58 @@ async function closeOffscreen() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
 
-    // ---- Popup asks for current state ----
     case 'get-status':
-      sendResponse({ recording, startTime: recordingStartTime });
+      sendResponse({
+        recording,
+        startTime: recordingStartTime,
+        tabTitle: recordingTabTitle,
+        channels: recordingChannels,
+        hasPendingBlob: !!pendingBlobUrl,
+      });
       return false;
 
-    // ---- Popup sends streamId to start recording ----
     case 'start-recording':
-      handleStartRecording(message.streamId, message.tabId, sendResponse);
-      return true; // async sendResponse
+      handleStartRecording(message.streamId, message.tabId, message.tabTitle, sendResponse);
+      return true;
 
-    // ---- Popup asks to stop recording ----
     case 'stop-recording':
       handleStopRecording(sendResponse);
       return true;
 
-    // ---- Offscreen confirms capture started ----
-    case 'offscreen-started':
-      // Capture actually started - state is already set, just log
-      console.log('[background] Offscreen confirmed capture started');
+    case 'retry-save':
+      if (pendingBlobUrl) {
+        handleWavReady(pendingBlobUrl, null);
+        sendResponse({ success: true });
+      } else {
+        sendResponse({ success: false, error: 'No pending recording' });
+      }
       return false;
 
-    // ---- Offscreen confirms it stopped and is encoding ----
+    case 'offscreen-started':
+      return false;
+
     case 'offscreen-stopped':
-      console.log('[background] Offscreen confirmed stop');
-      // Clear timeout since offscreen responded
       if (stopTimeoutId) {
         clearTimeout(stopTimeoutId);
         stopTimeoutId = null;
       }
-      // Now we can safely update state
       recording = false;
       recordingTabId = null;
-      // Respond to the pending stop request
+      recordingTabTitle = '';
       if (pendingStopResponse) {
         pendingStopResponse({ success: true });
         pendingStopResponse = null;
       }
+      updateBadge();
       broadcastStatus();
       return false;
 
-    // ---- Offscreen sends back a blob URL when recording finishes ----
     case 'offscreen-wav-ready':
       handleWavReady(message.blobUrl, message.filename);
       return false;
 
-    // ---- Offscreen reports an error ----
     case 'offscreen-error':
       console.error('[background] Offscreen error:', message.error);
-      // Clear any pending stop
       if (stopTimeoutId) {
         clearTimeout(stopTimeoutId);
         stopTimeoutId = null;
@@ -94,14 +109,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       recording = false;
       recordingTabId = null;
+      recordingTabTitle = '';
+      updateBadge();
       broadcastStatus();
+      return false;
+
+    case 'audio-level':
+      chrome.runtime.sendMessage({
+        type: 'audio-level-update',
+        peak: message.peak,
+      }).catch(() => {});
       return false;
   }
 });
 
 // ── Start recording ─────────────────────────────────────────────────────
 
-async function handleStartRecording(streamId, tabId, sendResponse) {
+async function handleStartRecording(streamId, tabId, tabTitle, sendResponse) {
   try {
     if (recording) {
       sendResponse({ success: false, error: 'Already recording' });
@@ -114,15 +138,11 @@ async function handleStartRecording(streamId, tabId, sendResponse) {
     }
 
     recordingTabId = tabId;
+    recordingTabTitle = tabTitle || '';
 
-    // Ensure the offscreen document is alive
     await ensureOffscreen();
-
-    // Give offscreen a moment to register its listener
-    // (in practice this is nearly instant, but a tiny delay prevents race conditions)
     await new Promise(r => setTimeout(r, 100));
 
-    // Forward the stream ID to the offscreen document
     chrome.runtime.sendMessage({
       type: 'start-capture',
       target: 'offscreen',
@@ -132,6 +152,7 @@ async function handleStartRecording(streamId, tabId, sendResponse) {
     recording = true;
     recordingStartTime = Date.now();
 
+    updateBadge();
     sendResponse({ success: true });
     broadcastStatus();
   } catch (err) {
@@ -142,7 +163,6 @@ async function handleStartRecording(streamId, tabId, sendResponse) {
 
 // ── Stop recording ──────────────────────────────────────────────────────
 
-// Pending stop request - we wait for offscreen to confirm before responding
 let pendingStopResponse = null;
 let stopTimeoutId = null;
 
@@ -153,10 +173,8 @@ async function handleStopRecording(sendResponse) {
       return;
     }
 
-    // Store the response callback - we'll call it when offscreen confirms
     pendingStopResponse = sendResponse;
 
-    // Set a timeout in case offscreen doesn't respond
     stopTimeoutId = setTimeout(() => {
       console.warn('[background] Stop capture timeout - forcing state reset');
       if (pendingStopResponse) {
@@ -165,11 +183,12 @@ async function handleStopRecording(sendResponse) {
       }
       recording = false;
       recordingTabId = null;
+      recordingTabTitle = '';
+      updateBadge();
       broadcastStatus();
       closeOffscreen().catch(() => {});
-    }, 10000); // 10 second timeout
+    }, 10000);
 
-    // Tell offscreen to stop and encode WAV
     chrome.runtime.sendMessage({
       type: 'stop-capture',
       target: 'offscreen',
@@ -193,50 +212,62 @@ async function handleStopRecording(sendResponse) {
 async function handleWavReady(blobUrl, filename) {
   let cleanedUp = false;
 
+  // Store blobUrl so user can retry save if dialog is cancelled
+  pendingBlobUrl = blobUrl;
+
+  if (!filename) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    filename = `tab-capture_${timestamp}.wav`;
+  }
+
   function cleanup() {
     if (cleanedUp) return;
     cleanedUp = true;
-    // Tell offscreen to revoke the blob URL to free memory
+    pendingBlobUrl = null;
     chrome.runtime.sendMessage({
       type: 'revoke-blob',
       target: 'offscreen',
       blobUrl,
     }).catch(() => {});
-    // Close the offscreen document to free resources
     closeOffscreen().catch(() => {});
   }
 
   try {
-    // Use chrome.downloads to let the user pick a save location
+    chrome.runtime.sendMessage({ type: 'save-dialog-opening' }).catch(() => {});
+
     const downloadId = await chrome.downloads.download({
       url: blobUrl,
       filename: filename || 'tab-capture.wav',
-      saveAs: true, // show "Save As" dialog
+      saveAs: true,
     });
 
-    // Monitor download status for cleanup
     const listener = (delta) => {
       if (delta.id === downloadId && delta.state) {
-        if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+        if (delta.state.current === 'complete') {
           chrome.downloads.onChanged.removeListener(listener);
-          // Notify popup
           chrome.runtime.sendMessage({ type: 'download-complete' }).catch(() => {});
           cleanup();
+        } else if (delta.state.current === 'interrupted') {
+          chrome.downloads.onChanged.removeListener(listener);
+          // Keep pendingBlobUrl so user can retry
+          chrome.runtime.sendMessage({ type: 'download-cancelled' }).catch(() => {});
         }
       }
     };
     chrome.downloads.onChanged.addListener(listener);
 
-    // Fallback cleanup after 2 minutes in case dialog is cancelled
-    // (cancelled dialogs don't always trigger state changes)
+    // Fallback cleanup after 5 minutes
     setTimeout(() => {
       chrome.downloads.onChanged.removeListener(listener);
       cleanup();
-    }, 120000);
+    }, 300000);
 
   } catch (err) {
     console.error('[background] Download error:', err);
-    cleanup();
+    // Keep pendingBlobUrl for retry on user-cancel errors
+    if (!err.message?.includes('user')) {
+      cleanup();
+    }
   }
 }
 
@@ -246,21 +277,55 @@ function broadcastStatus() {
   chrome.runtime.sendMessage({
     type: 'recording-status',
     recording,
-  }).catch(() => {
-    // Popup may be closed, that's fine
-  });
+  }).catch(() => {});
 }
 
 // ── Clean up if the captured tab is closed ──────────────────────────────
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (recording && tabId === recordingTabId) {
+    // Send stop so offscreen encodes and saves whatever was captured
     chrome.runtime.sendMessage({
       type: 'stop-capture',
       target: 'offscreen',
     }).catch(() => {});
     recording = false;
     recordingTabId = null;
+    recordingTabTitle = '';
+    updateBadge();
     broadcastStatus();
+    chrome.runtime.sendMessage({
+      type: 'recording-error',
+      error: 'Recorded tab was closed — saving captured audio',
+    }).catch(() => {});
+  }
+});
+
+// ── Keyboard shortcut handler ──────────────────────────────────────────
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-recording') return;
+
+  if (recording) {
+    handleStopRecording((resp) => {
+      if (!resp?.success) {
+        console.warn('[background] Shortcut stop failed:', resp?.error);
+      }
+    });
+    return;
+  }
+
+  // Start recording the active tab
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+    if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
+
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, (streamId) => {
+      if (chrome.runtime.lastError || !streamId) return;
+      handleStartRecording(streamId, tab.id, tab.title || tab.url, () => {});
+    });
+  } catch (err) {
+    console.error('[background] Shortcut start error:', err);
   }
 });

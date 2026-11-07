@@ -83,14 +83,19 @@ async function startCapture(streamId) {
 
     pcmChunks = [];
 
-    // 5. Listen for PCM data from the worklet's audio thread
+    // 5. Listen for PCM data and audio levels from the worklet
     workletNode.port.onmessage = (event) => {
       if (event.data.type === 'pcm' && isCapturing) {
         pcmChunks.push(event.data.samples);
-        // Update channelCount from the actual data if needed
         if (event.data.channels) {
           channelCount = event.data.channels;
         }
+      }
+      if (event.data.type === 'level') {
+        chrome.runtime.sendMessage({
+          type: 'audio-level',
+          peak: event.data.peak,
+        }).catch(() => {});
       }
     };
 
