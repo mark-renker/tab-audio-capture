@@ -9,10 +9,41 @@ const btnIcon = document.getElementById('btnIcon');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const timerEl = document.getElementById('timer');
+const mainView = document.getElementById('mainView');
+const settingsView = document.getElementById('settingsView');
+const settingsBtn = document.getElementById('settingsBtn');
+const backBtn = document.getElementById('backBtn');
+const saveAsToggle = document.getElementById('saveAsToggle');
+const openFolderToggle = document.getElementById('openFolderToggle');
+const subfolderInput = document.getElementById('subfolderInput');
+const prefixInput = document.getElementById('prefixInput');
+const openDownloadsSettingsBtn = document.getElementById('openDownloadsSettingsBtn');
+const saveBehaviorSummary = document.getElementById('saveBehaviorSummary');
+const sampleRateSelect = document.getElementById('sampleRateSelect');
+const channelModeSelect = document.getElementById('channelModeSelect');
+const trimSilenceToggle = document.getElementById('trimSilenceToggle');
+const silenceThresholdDbInput = document.getElementById('silenceThresholdDbInput');
+const fadeMsInput = document.getElementById('fadeMsInput');
+const normalizeToggle = document.getElementById('normalizeToggle');
+const normalizeTargetDbInput = document.getElementById('normalizeTargetDbInput');
 
 let isRecording = false;
 let timerInterval = null;
 let startTime = 0;
+
+const DEFAULT_SETTINGS = {
+  saveAs: true,
+  openFolderAfterSave: false,
+  subfolder: '',
+  filenamePrefix: 'tab-capture_',
+  sampleRate: 44100,
+  channelMode: 'stereo', // 'stereo' | 'mono'
+  trimSilence: true,
+  silenceThresholdDb: -55,
+  fadeMs: 10,
+  normalize: true,
+  normalizeTargetDb: -1.0,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -51,6 +82,74 @@ function startTimer() {
   }, 250);
 }
 
+function showView(which) {
+  if (which === 'settings') {
+    mainView.classList.remove('active');
+    settingsView.classList.add('active');
+  } else {
+    settingsView.classList.remove('active');
+    mainView.classList.add('active');
+  }
+}
+
+function sanitizeSubfolder(input) {
+  let s = (input || '').trim();
+  if (!s) return '';
+  s = s.replace(/\\\\/g, '/');
+  s = s.replace(/\\.+/g, '.'); // collapse repeated dots (defensive)
+  s = s.replace(/^\\/+/, '');
+  if (s.includes('..')) s = s.replace(/\\.\\./g, '');
+  if (s && !s.endsWith('/')) s += '/';
+  return s;
+}
+
+function clamp(num, min, max) {
+  return Math.min(max, Math.max(min, num));
+}
+
+function parseNumberOr(input, fallback) {
+  const s = String(input ?? '').trim();
+  if (!s) return fallback;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function updateSaveBehaviorSummary() {
+  const saveAs = !!saveAsToggle.checked;
+  const subfolder = sanitizeSubfolder(subfolderInput.value);
+  const targetPath = subfolder ? `Downloads/${subfolder}` : 'Downloads/';
+
+  if (saveAs) {
+    saveBehaviorSummary.textContent =
+      `Will show a “Save As” dialog for each recording. If you don’t see a dialog, check Chrome → Downloads settings and make sure downloads prompts aren’t being suppressed. Target path when accepted: ${targetPath}`;
+  } else {
+    saveBehaviorSummary.textContent =
+      `Will auto-save into your default Downloads location (${targetPath}). Note: Chrome’s own “Ask where to save each file” setting may still cause prompts even if this toggle is off.`;
+  }
+}
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  const settings = { ...DEFAULT_SETTINGS, ...stored };
+  saveAsToggle.checked = !!settings.saveAs;
+  openFolderToggle.checked = !!settings.openFolderAfterSave;
+  subfolderInput.value = settings.subfolder || '';
+  prefixInput.value = settings.filenamePrefix || DEFAULT_SETTINGS.filenamePrefix;
+  sampleRateSelect.value = String(settings.sampleRate || DEFAULT_SETTINGS.sampleRate);
+  channelModeSelect.value = settings.channelMode || DEFAULT_SETTINGS.channelMode;
+  trimSilenceToggle.checked = !!settings.trimSilence;
+  silenceThresholdDbInput.value = String(settings.silenceThresholdDb ?? DEFAULT_SETTINGS.silenceThresholdDb);
+  fadeMsInput.value = String(settings.fadeMs ?? DEFAULT_SETTINGS.fadeMs);
+  normalizeToggle.checked = !!settings.normalize;
+  normalizeTargetDbInput.value = String(settings.normalizeTargetDb ?? DEFAULT_SETTINGS.normalizeTargetDb);
+  updateSaveBehaviorSummary();
+  return settings;
+}
+
+async function saveSettings(partial) {
+  await chrome.storage.local.set(partial);
+}
+
 // ── On popup open, ask the service worker for current state ─────────────
 
 chrome.runtime.sendMessage({ type: 'get-status' }, (resp) => {
@@ -69,6 +168,91 @@ chrome.runtime.sendMessage({ type: 'get-status' }, (resp) => {
   } else {
     setUI(false);
   }
+});
+
+// ── Settings UI ─────────────────────────────────────────────────────────
+
+loadSettings().catch(() => {});
+
+settingsBtn.addEventListener('click', async () => {
+  await loadSettings().catch(() => {});
+  showView('settings');
+});
+
+backBtn.addEventListener('click', () => {
+  showView('main');
+});
+
+saveAsToggle.addEventListener('change', () => {
+  saveSettings({ saveAs: saveAsToggle.checked }).catch(() => {});
+  updateSaveBehaviorSummary();
+});
+
+openFolderToggle.addEventListener('change', () => {
+  saveSettings({ openFolderAfterSave: openFolderToggle.checked }).catch(() => {});
+});
+
+subfolderInput.addEventListener('change', () => {
+  const cleaned = sanitizeSubfolder(subfolderInput.value);
+  subfolderInput.value = cleaned;
+  saveSettings({ subfolder: cleaned }).catch(() => {});
+  updateSaveBehaviorSummary();
+});
+
+subfolderInput.addEventListener('input', () => {
+  updateSaveBehaviorSummary();
+});
+
+prefixInput.addEventListener('change', () => {
+  const cleaned = (prefixInput.value || '').trim() || DEFAULT_SETTINGS.filenamePrefix;
+  prefixInput.value = cleaned;
+  saveSettings({ filenamePrefix: cleaned }).catch(() => {});
+});
+
+sampleRateSelect.addEventListener('change', () => {
+  const sr = parseInt(sampleRateSelect.value, 10);
+  const sampleRate = sr === 48000 ? 48000 : 44100;
+  sampleRateSelect.value = String(sampleRate);
+  saveSettings({ sampleRate }).catch(() => {});
+});
+
+channelModeSelect.addEventListener('change', () => {
+  const mode = channelModeSelect.value === 'mono' ? 'mono' : 'stereo';
+  channelModeSelect.value = mode;
+  saveSettings({ channelMode: mode }).catch(() => {});
+});
+
+trimSilenceToggle.addEventListener('change', () => {
+  saveSettings({ trimSilence: trimSilenceToggle.checked }).catch(() => {});
+});
+
+silenceThresholdDbInput.addEventListener('change', () => {
+  const n = parseNumberOr(silenceThresholdDbInput.value, DEFAULT_SETTINGS.silenceThresholdDb);
+  const val = clamp(n, -90, -10);
+  silenceThresholdDbInput.value = String(val);
+  saveSettings({ silenceThresholdDb: val }).catch(() => {});
+});
+
+fadeMsInput.addEventListener('change', () => {
+  const n = parseNumberOr(fadeMsInput.value, DEFAULT_SETTINGS.fadeMs);
+  const val = clamp(Math.round(n), 0, 200);
+  fadeMsInput.value = String(val);
+  saveSettings({ fadeMs: val }).catch(() => {});
+});
+
+normalizeToggle.addEventListener('change', () => {
+  saveSettings({ normalize: normalizeToggle.checked }).catch(() => {});
+});
+
+normalizeTargetDbInput.addEventListener('change', () => {
+  const n = parseNumberOr(normalizeTargetDbInput.value, DEFAULT_SETTINGS.normalizeTargetDb);
+  const val = clamp(n, -24, -0.1);
+  normalizeTargetDbInput.value = String(val);
+  saveSettings({ normalizeTargetDb: val }).catch(() => {});
+});
+
+openDownloadsSettingsBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'open-downloads-settings' });
 });
 
 // ── Button click ────────────────────────────────────────────────────────
@@ -187,6 +371,12 @@ chrome.runtime.onMessage.addListener((message) => {
     setTimeout(() => {
       statusText.textContent = 'Ready to record';
     }, 2500);
+  }
+  if (message.type === 'download-error') {
+    statusText.textContent = 'Save failed: ' + (message.error || 'Unknown');
+    setTimeout(() => {
+      statusText.textContent = 'Ready to record';
+    }, 4000);
   }
   if (message.type === 'recording-error') {
     setUI(false);

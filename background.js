@@ -8,6 +8,35 @@ let recording = false;
 let recordingStartTime = 0;
 let recordingTabId = null;
 
+const DEFAULT_SETTINGS = {
+  saveAs: true,
+  openFolderAfterSave: false,
+  subfolder: '',
+  filenamePrefix: 'tab-capture_',
+};
+
+async function getSettings() {
+  const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  return { ...DEFAULT_SETTINGS, ...stored };
+}
+
+function sanitizeSubfolder(input) {
+  let s = (input || '').trim();
+  if (!s) return '';
+  s = s.replace(/\\\\/g, '/');
+  s = s.replace(/\\.+/g, '.');
+  s = s.replace(/^\\/+/, '');
+  if (s.includes('..')) s = s.replace(/\\.\\./g, '');
+  if (s && !s.endsWith('/')) s += '/';
+  return s;
+}
+
+function withSubfolder(filename, subfolder) {
+  const folder = sanitizeSubfolder(subfolder);
+  if (!folder) return filename;
+  return folder + filename.replace(/^\\/+/, '');
+}
+
 // ── Offscreen document management ───────────────────────────────────────
 
 async function ensureOffscreen() {
@@ -49,6 +78,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'stop-recording':
       handleStopRecording(sendResponse);
       return true;
+
+    case 'open-downloads-settings':
+      chrome.tabs.create({ url: 'chrome://settings/downloads' }).catch(() => {});
+      sendResponse({ success: true });
+      return false;
 
     // ---- Offscreen confirms capture started ----
     case 'offscreen-started':
@@ -207,11 +241,17 @@ async function handleWavReady(blobUrl, filename) {
   }
 
   try {
+    const settings = await getSettings();
+
+    // If offscreen didn't provide one, use a safe default.
+    const baseName = filename || 'tab-capture.wav';
+    const targetName = withSubfolder(baseName, settings.subfolder);
+
     // Use chrome.downloads to let the user pick a save location
     const downloadId = await chrome.downloads.download({
       url: blobUrl,
-      filename: filename || 'tab-capture.wav',
-      saveAs: true, // show "Save As" dialog
+      filename: targetName,
+      saveAs: !!settings.saveAs,
     });
 
     // Monitor download status for cleanup
@@ -220,7 +260,14 @@ async function handleWavReady(blobUrl, filename) {
         if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
           chrome.downloads.onChanged.removeListener(listener);
           // Notify popup
-          chrome.runtime.sendMessage({ type: 'download-complete' }).catch(() => {});
+          if (delta.state.current === 'complete') {
+            chrome.runtime.sendMessage({ type: 'download-complete' }).catch(() => {});
+            if (settings.openFolderAfterSave) {
+              chrome.downloads.show(downloadId);
+            }
+          } else {
+            chrome.runtime.sendMessage({ type: 'download-error', error: 'Download interrupted' }).catch(() => {});
+          }
           cleanup();
         }
       }
@@ -236,6 +283,7 @@ async function handleWavReady(blobUrl, filename) {
 
   } catch (err) {
     console.error('[background] Download error:', err);
+    chrome.runtime.sendMessage({ type: 'download-error', error: err.message }).catch(() => {});
     cleanup();
   }
 }

@@ -24,6 +24,38 @@
       margin-bottom: 16px;
     }
 
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+      color: #e0e0e0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
     .header svg {
       width: 24px;
       height: 24px;
@@ -125,31 +157,315 @@
       text-align: center;
       line-height: 1.5;
     }
+
+    .view {
+      display: none;
+    }
+
+    .view.active {
+      display: block;
+    }
+
+    .settings-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 4px 0 12px 0;
+      color: #fff;
+    }
+
+    .settings-group {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .settings-summary {
+      border: 1px solid rgba(233, 69, 96, 0.22);
+      background: rgba(233, 69, 96, 0.07);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+
+    .settings-summary .title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+
+    .settings-summary .text {
+      font-size: 11px;
+      color: #ddd;
+      line-height: 1.45;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 8px 0;
+    }
+
+    .row label {
+      font-size: 12px;
+      color: #e0e0e0;
+    }
+
+    .row .hint {
+      font-size: 11px;
+      color: #888;
+      line-height: 1.4;
+      margin-top: 2px;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+
+    input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #e94560;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(0, 0, 0, 0.15);
+      color: #fff;
+      outline: none;
+      font-size: 12px;
+    }
+
+    input[type="text"]::placeholder {
+      color: #777;
+    }
+
+    select {
+      width: 100%;
+      padding: 10px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(0, 0, 0, 0.15);
+      color: #fff;
+      outline: none;
+      font-size: 12px;
+      appearance: none;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .secondary-btn {
+      flex: 1;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(255, 255, 255, 0.04);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12px;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .secondary-btn:hover {
+      background: rgba(255, 255, 255, 0.07);
+      border-color: rgba(255, 255, 255, 0.16);
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
     <h1>Tab Audio Capture</h1>
+    <div class="header-actions">
+      <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24">
+          <path d="M19.14,12.94a7.43,7.43,0,0,0,.05-.94,7.43,7.43,0,0,0-.05-.94l2.11-1.65a.5.5,0,0,0,.12-.64l-2-3.46a.5.5,0,0,0-.6-.22l-2.49,1a7.28,7.28,0,0,0-1.63-.94l-.38-2.65A.5.5,0,0,0,13.79,2H10.21a.5.5,0,0,0-.49.42L9.34,5.07a7.28,7.28,0,0,0-1.63.94l-2.49-1a.5.5,0,0,0-.6.22l-2,3.46a.5.5,0,0,0,.12.64L4.86,11.06a7.43,7.43,0,0,0-.05.94,7.43,7.43,0,0,0,.05.94L2.75,14.59a.5.5,0,0,0-.12.64l2,3.46a.5.5,0,0,0,.6.22l2.49-1a7.28,7.28,0,0,0,1.63.94l.38,2.65a.5.5,0,0,0,.49.42h3.58a.5.5,0,0,0,.49-.42l.38-2.65a7.28,7.28,0,0,0,1.63-.94l2.49,1a.5.5,0,0,0,.6-.22l2-3.46a.5.5,0,0,0-.12-.64ZM12,15.5A3.5,3.5,0,1,1,15.5,12,3.5,3.5,0,0,1,12,15.5Z"/>
+        </svg>
+      </button>
+    </div>
   </div>
 
-  <div class="status">
-    <span class="status-dot" id="statusDot"></span>
-    <span id="statusText">Ready to record</span>
+  <div id="mainView" class="view active">
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Ready to record</span>
+    </div>
+
+    <div class="timer" id="timer">00:00:00</div>
+
+    <button id="recordBtn" class="idle">
+      <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor" id="btnIcon">
+        <circle cx="12" cy="12" r="8"/>
+      </svg>
+      <span id="btnLabel">Record</span>
+    </button>
+
+    <div class="info">
+      Captures audio from the active tab.<br>
+      Saves as 16-bit / 44.1 kHz WAV.
+    </div>
   </div>
 
-  <div class="timer" id="timer">00:00:00</div>
+  <div id="settingsView" class="view">
+    <div class="settings-title">Settings</div>
 
-  <button id="recordBtn" class="idle">
-    <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor" id="btnIcon">
-      <circle cx="12" cy="12" r="8"/>
-    </svg>
-    <span id="btnLabel">Record</span>
-  </button>
+    <div class="settings-summary">
+      <div class="title">Effective save behavior</div>
+      <div class="text" id="saveBehaviorSummary">Loading…</div>
+    </div>
 
-  <div class="info">
-    Captures audio from the active tab.<br>
-    Saves as 16-bit / 44.1 kHz WAV.
+    <div class="settings-group">
+      <div class="row">
+        <div class="stack">
+          <label for="saveAsToggle">Ask where to save each time</label>
+          <div class="hint">If off, files save to your browser’s default Downloads location.</div>
+        </div>
+        <span class="toggle">
+          <input type="checkbox" id="saveAsToggle">
+        </span>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="stack">
+          <label for="subfolderInput">Subfolder (optional)</label>
+          <div class="hint">Saves into a subfolder inside Downloads (e.g. <span style="font-family: ui-monospace;">Samples/</span>).</div>
+        </div>
+      </div>
+      <input type="text" id="subfolderInput" placeholder="Samples/">
+
+      <div class="row" style="margin-top:10px;">
+        <div class="stack">
+          <label for="prefixInput">Filename prefix</label>
+          <div class="hint">Default: <span style="font-family: ui-monospace;">tab-capture_</span></div>
+        </div>
+      </div>
+      <input type="text" id="prefixInput" placeholder="tab-capture_">
+
+      <div class="row" style="margin-top:10px;">
+        <div class="stack">
+          <label for="openFolderToggle">Open downloads folder after save</label>
+        </div>
+        <span class="toggle">
+          <input type="checkbox" id="openFolderToggle">
+        </span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="row">
+        <div class="stack">
+          <label>Audio</label>
+          <div class="hint">DAW-friendly defaults for sampling.</div>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-top:8px;">
+        <div>
+          <div class="row" style="margin: 0 0 6px 0;">
+            <div class="stack">
+              <label for="sampleRateSelect">Sample rate</label>
+            </div>
+          </div>
+          <select id="sampleRateSelect">
+            <option value="44100">44.1 kHz</option>
+            <option value="48000">48 kHz</option>
+          </select>
+        </div>
+        <div>
+          <div class="row" style="margin: 0 0 6px 0;">
+            <div class="stack">
+              <label for="channelModeSelect">Channels</label>
+            </div>
+          </div>
+          <select id="channelModeSelect">
+            <option value="stereo">Stereo</option>
+            <option value="mono">Mono (downmix)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <div class="stack">
+          <label for="trimSilenceToggle">Trim leading/trailing silence</label>
+          <div class="hint">Removes quiet sections at start/end.</div>
+        </div>
+        <span class="toggle">
+          <input type="checkbox" id="trimSilenceToggle">
+        </span>
+      </div>
+
+      <div class="two-col" style="margin-top:8px;">
+        <div>
+          <div class="row" style="margin: 0 0 6px 0;">
+            <div class="stack">
+              <label for="silenceThresholdDbInput">Silence threshold (dB)</label>
+              <div class="hint">Typical: -45 to -60</div>
+            </div>
+          </div>
+          <input type="text" id="silenceThresholdDbInput" placeholder="-55">
+        </div>
+        <div>
+          <div class="row" style="margin: 0 0 6px 0;">
+            <div class="stack">
+              <label for="fadeMsInput">Fade in/out (ms)</label>
+              <div class="hint">Avoid clicks</div>
+            </div>
+          </div>
+          <input type="text" id="fadeMsInput" placeholder="10">
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <div class="stack">
+          <label for="normalizeToggle">Normalize to target peak</label>
+          <div class="hint">Keeps samples consistent; won’t exceed 0 dBFS.</div>
+        </div>
+        <span class="toggle">
+          <input type="checkbox" id="normalizeToggle">
+        </span>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <div class="stack">
+          <label for="normalizeTargetDbInput">Normalize target (dBFS)</label>
+          <div class="hint">Typical: -1.0</div>
+        </div>
+      </div>
+      <input type="text" id="normalizeTargetDbInput" placeholder="-1.0">
+    </div>
+
+    <div class="btn-row">
+      <button class="secondary-btn" id="openDownloadsSettingsBtn">Downloads settings</button>
+      <button class="secondary-btn" id="backBtn">Back</button>
+    </div>
   </div>
 
   <script src="popup.js"></script>

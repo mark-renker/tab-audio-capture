@@ -11,6 +11,23 @@ let pcmChunks = [];      // Array of Float32Array (interleaved stereo or mono)
 let channelCount = 2;
 let sampleRate = 44100;
 let isCapturing = false;
+let activeSettings = null;
+
+const DEFAULT_SETTINGS = {
+  filenamePrefix: 'tab-capture_',
+  sampleRate: 44100,
+  channelMode: 'stereo', // 'stereo' | 'mono'
+  trimSilence: true,
+  silenceThresholdDb: -55,
+  fadeMs: 10,
+  normalize: true,
+  normalizeTargetDb: -1.0,
+};
+
+async function loadSettings() {
+  const stored = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  return { ...DEFAULT_SETTINGS, ...stored };
+}
 
 // ── Message handler ─────────────────────────────────────────────────────
 
@@ -41,6 +58,9 @@ async function startCapture(streamId) {
   try {
     if (isCapturing) return;
 
+    // Snapshot settings at start so stop uses consistent values.
+    activeSettings = await loadSettings();
+
     // 1. Redeem the stream ID for a real MediaStream (audio only)
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -57,8 +77,9 @@ async function startCapture(streamId) {
       throw new Error('No audio track in captured stream');
     }
 
-    // 2. Set up Web Audio graph at 44.1 kHz
-    audioContext = new AudioContext({ sampleRate: 44100 });
+    // 2. Set up Web Audio graph at requested sample rate
+    const requestedSampleRate = activeSettings?.sampleRate === 48000 ? 48000 : 44100;
+    audioContext = new AudioContext({ sampleRate: requestedSampleRate });
     sampleRate = audioContext.sampleRate;
 
     sourceNode = audioContext.createMediaStreamSource(mediaStream);
@@ -183,19 +204,155 @@ function stopCapture() {
 
   console.log('[offscreen] Encoding WAV — samples:', totalLength, 'channels:', channelCount);
 
+  const settings = activeSettings || DEFAULT_SETTINGS;
+  const processed = processAudio(merged, sampleRate, channelCount, settings);
+
   // Encode to WAV
-  const wavBlob = encodeWAV(merged, sampleRate, channelCount);
+  const wavBlob = encodeWAV(processed.samples, processed.sampleRate, processed.channelCount);
 
   // Create a blob URL and send it back to the service worker
   const blobUrl = URL.createObjectURL(wavBlob);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filename = `tab-capture_${timestamp}.wav`;
+  const prefix = (settings.filenamePrefix || DEFAULT_SETTINGS.filenamePrefix || 'tab-capture_').trim() || 'tab-capture_';
+  const filename = `${prefix}${timestamp}.wav`;
 
   chrome.runtime.sendMessage({
     type: 'offscreen-wav-ready',
     blobUrl,
     filename,
   });
+}
+
+// ── Audio processing (sampling-focused) ──────────────────────────────────
+
+function dbToLinear(db) {
+  return Math.pow(10, db / 20);
+}
+
+function computePeak(samples) {
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > peak) peak = a;
+  }
+  return peak;
+}
+
+function applyGain(samples, gain) {
+  if (!Number.isFinite(gain) || gain === 1) return samples;
+  const out = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) out[i] = samples[i] * gain;
+  return out;
+}
+
+function downmixToMono(interleaved, inChannels) {
+  if (inChannels === 1) return interleaved;
+  const frames = Math.floor(interleaved.length / inChannels);
+  const out = new Float32Array(frames);
+  for (let f = 0; f < frames; f++) {
+    let sum = 0;
+    const base = f * inChannels;
+    for (let c = 0; c < inChannels; c++) sum += interleaved[base + c];
+    out[f] = sum / inChannels;
+  }
+  return out;
+}
+
+function trimSilenceInterleaved(interleaved, sr, channels, thresholdLinear) {
+  const frames = Math.floor(interleaved.length / channels);
+  if (frames === 0) return interleaved;
+
+  const thr = Math.max(0, thresholdLinear);
+
+  let startFrame = 0;
+  while (startFrame < frames) {
+    const base = startFrame * channels;
+    let maxAbs = 0;
+    for (let c = 0; c < channels; c++) {
+      const a = Math.abs(interleaved[base + c]);
+      if (a > maxAbs) maxAbs = a;
+    }
+    if (maxAbs > thr) break;
+    startFrame++;
+  }
+
+  let endFrame = frames - 1;
+  while (endFrame >= startFrame) {
+    const base = endFrame * channels;
+    let maxAbs = 0;
+    for (let c = 0; c < channels; c++) {
+      const a = Math.abs(interleaved[base + c]);
+      if (a > maxAbs) maxAbs = a;
+    }
+    if (maxAbs > thr) break;
+    endFrame--;
+  }
+
+  const newFrames = Math.max(0, endFrame - startFrame + 1);
+  if (newFrames <= 0) return interleaved;
+  const out = new Float32Array(newFrames * channels);
+  out.set(interleaved.subarray(startFrame * channels, (endFrame + 1) * channels));
+  return out;
+}
+
+function applyFadesInterleaved(interleaved, sr, channels, fadeMs) {
+  const fadeSamples = Math.max(0, Math.round((sr * Math.max(0, fadeMs)) / 1000));
+  if (fadeSamples === 0) return interleaved;
+
+  const frames = Math.floor(interleaved.length / channels);
+  const fadeFrames = Math.min(fadeSamples, Math.floor(frames / 2));
+  if (fadeFrames <= 0) return interleaved;
+
+  const out = new Float32Array(interleaved);
+
+  for (let f = 0; f < fadeFrames; f++) {
+    const g = (f + 1) / fadeFrames;
+    const base = f * channels;
+    for (let c = 0; c < channels; c++) out[base + c] *= g;
+  }
+
+  for (let f = 0; f < fadeFrames; f++) {
+    const g = (fadeFrames - f) / fadeFrames;
+    const frameIndex = frames - 1 - f;
+    const base = frameIndex * channels;
+    for (let c = 0; c < channels; c++) out[base + c] *= g;
+  }
+
+  return out;
+}
+
+function processAudio(samples, sr, channels, settings) {
+  let outSamples = samples;
+  let outChannels = channels;
+  const outSampleRate = sr;
+
+  if (settings.trimSilence) {
+    const thrDb = Number.isFinite(settings.silenceThresholdDb) ? settings.silenceThresholdDb : DEFAULT_SETTINGS.silenceThresholdDb;
+    const thrLin = dbToLinear(thrDb);
+    outSamples = trimSilenceInterleaved(outSamples, sr, outChannels, thrLin);
+  }
+
+  const fadeMs = Number.isFinite(settings.fadeMs) ? settings.fadeMs : DEFAULT_SETTINGS.fadeMs;
+  if (fadeMs > 0) {
+    outSamples = applyFadesInterleaved(outSamples, sr, outChannels, fadeMs);
+  }
+
+  if (settings.normalize) {
+    const targetDb = Number.isFinite(settings.normalizeTargetDb) ? settings.normalizeTargetDb : DEFAULT_SETTINGS.normalizeTargetDb;
+    const targetLin = dbToLinear(targetDb);
+    const peak = computePeak(outSamples);
+    if (peak > 0) {
+      const gain = targetLin / peak;
+      outSamples = applyGain(outSamples, gain);
+    }
+  }
+
+  if (settings.channelMode === 'mono') {
+    outSamples = downmixToMono(outSamples, outChannels);
+    outChannels = 1;
+  }
+
+  return { samples: outSamples, sampleRate: outSampleRate, channelCount: outChannels };
 }
 
 // ── WAV encoder — float32 PCM → 16-bit little-endian WAV ───────────────
